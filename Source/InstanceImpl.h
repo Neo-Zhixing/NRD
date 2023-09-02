@@ -230,7 +230,7 @@ namespace nrd
         }
 
         ~InstanceImpl()
-        { m_StdAllocator.deallocate(m_ConstantData, 0); }
+        { m_StdAllocator.deallocate(m_ConstantData, CONSTANT_DATA_SIZE); }
 
         inline const InstanceDesc& GetDesc() const
         { return m_Desc; }

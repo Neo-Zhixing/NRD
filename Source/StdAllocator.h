@@ -28,16 +28,20 @@ inline void* AlignedMalloc(void* userArg, size_t size, size_t alignment)
     return _aligned_malloc(size, alignment);
 }
 
-inline void* AlignedRealloc(void* userArg, void* memory, size_t size, size_t alignment)
+inline void* AlignedRealloc(void* userArg, void* memory, size_t new_size, size_t new_alignment, size_t old_size, size_t old_alignment)
 {
     StdAllocator_MaybeUnused(userArg);
+    StdAllocator_MaybeUnused(old_size);
+    StdAllocator_MaybeUnused(old_alignment);
 
-    return _aligned_realloc(memory, size, alignment);
+    return _aligned_realloc(memory, new_size, new_alignment);
 }
 
-inline void AlignedFree(void* userArg, void* memory)
+inline void AlignedFree(void* userArg, void* memory, size_t size, size_t alignment)
 {
     StdAllocator_MaybeUnused(userArg);
+    StdAllocator_MaybeUnused(size);
+    StdAllocator_MaybeUnused(alignment);
 
     _aligned_free(memory);
 }
@@ -67,8 +71,10 @@ inline void* AlignedMalloc(void* userArg, size_t size, size_t alignment)
     return alignedMemory;
 }
 
-inline void* AlignedRealloc(void* userArg, void* memory, size_t size, size_t alignment)
+inline void* AlignedRealloc(void* userArg, void* memory, size_t size, size_t alignment, size_t old_size, size_t old_alignment)
 {
+    StdAllocator_MaybeUnused(old_size);
+    StdAllocator_MaybeUnused(old_alignment);
     if (memory == nullptr)
         return AlignedMalloc(userArg, size, alignment);
 
@@ -89,9 +95,11 @@ inline void* AlignedRealloc(void* userArg, void* memory, size_t size, size_t ali
     return alignedMemory;
 }
 
-inline void AlignedFree(void* userArg, void* memory)
+inline void AlignedFree(void* userArg, void* memory, size_t size, size_t alignment)
 {
     StdAllocator_MaybeUnused(userArg);
+    StdAllocator_MaybeUnused(size);
+    StdAllocator_MaybeUnused(alignment);
 
     if (memory == nullptr)
         return;
@@ -141,8 +149,8 @@ struct StdAllocator
     T* allocate(size_t n) noexcept
     { return (T*)m_Interface.Allocate(m_Interface.userArg, n * sizeof(T), alignof(T)); }
 
-    void deallocate(T* memory, size_t) noexcept
-    { m_Interface.Free(m_Interface.userArg, memory); }
+    void deallocate(T* memory, size_t n) noexcept
+    { m_Interface.Free(m_Interface.userArg, memory, n * sizeof(T), alignof(T)); }
 
     const MemoryAllocatorInterface& GetInterface() const
     { return m_Interface; }
@@ -234,7 +242,7 @@ inline void Deallocate(StdAllocator<uint8_t>& allocator, T* object)
     object->~T();
 
     const auto& lowLevelAllocator = allocator.GetInterface();
-    lowLevelAllocator.Free(lowLevelAllocator.userArg, object);
+    lowLevelAllocator.Free(lowLevelAllocator.userArg, object, sizeof(T), alignof(T));
 }
 
 template<typename T>

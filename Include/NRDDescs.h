@@ -398,8 +398,8 @@ namespace nrd
     struct MemoryAllocatorInterface
     {
         void* (*Allocate)(void* userArg, size_t size, size_t alignment);
-        void* (*Reallocate)(void* userArg, void* memory, size_t size, size_t alignment);
-        void (*Free)(void* userArg, void* memory);
+        void* (*Reallocate)(void* userArg, void* memory, size_t new_size, size_t new_alignment, size_t old_size, size_t old_alignment);
+        void (*Free)(void* userArg, void* memory, size_t size, size_t alignment);
         void* userArg;
     };
 
