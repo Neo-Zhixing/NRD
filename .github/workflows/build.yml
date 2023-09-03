@@ -7,7 +7,7 @@ on:
     branches:
       - master
 jobs:
-  Build-Windows:
+  build-windows:
     runs-on: windows-latest
     steps:
       - name : Checkout
@@ -32,7 +32,7 @@ jobs:
           $Env:Path += ";C:/VulkanSDK/Bin"
           mkdir build
           cd build
-          cmake .. 
+          cmake .. -DNRD_EMBEDS_DXBC_SHADERS=False -DNRD_EMBEDS_DXIL_SHADERS=False
           cd ..
       - name: Compile
         run: |
@@ -46,9 +46,8 @@ jobs:
         with:
           name: Windows
           path: _Build
-          
-  Build-Ubuntu:
-    runs-on: ubuntu-20.04
+  build-ubuntu:
+    runs-on: ubuntu-22.04
     steps:
       - name : Checkout
         uses: actions/checkout@v3
@@ -62,14 +61,14 @@ jobs:
         run: |
           sudo apt install -y wget
           wget -qO - http://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-focal.list http://packages.lunarg.com/vulkan/lunarg-vulkan-focal.list
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list http://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
           sudo apt update
           sudo apt install -y vulkan-sdk
       - name: CMake Generate
         run: |
           mkdir build
           cd build
-          cmake .. 
+          cmake ..
           cd ..
       - name: Compile
         run: |
