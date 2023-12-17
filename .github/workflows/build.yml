@@ -45,7 +45,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: Windows
-          path: _Build
+          path: _Bin
   build-ubuntu:
     runs-on: ubuntu-22.04
     steps:
@@ -74,9 +74,9 @@ jobs:
         run: |
           cd build
           cmake --build . --config Release
-          cd ..
+          cp ./libNRD.so ../_Bin/
       - name: Upload NRD SDK as artefact
         uses: actions/upload-artifact@v3
         with:
           name: Linux
-          path: _Build/
+          path: _Bin/
