@@ -73,7 +73,7 @@ NRD_EXPORT void NRD_CS_MAIN( int2 threadPos : SV_GroupThreadId, int2 pixelPos : 
     #endif
 
     // Early out
-    if( centerHitDist == 0.0 || tileValue == 0.0 )
+    if( ( tileValue == 0.0 && NRD_USE_TILE_CHECK ) || centerHitDist == 0.0 )
     {
         gOut_Shadow_Translucency[ pixelPos ] = PackShadow( s_Shadow_Translucency[ smemPos.y ][ smemPos.x ] );
         gOut_Hit_ViewZ[ pixelPos ] = float2( 0.0, viewZ * NRD_FP16_VIEWZ_SCALE );
@@ -191,12 +191,14 @@ NRD_EXPORT void NRD_CS_MAIN( int2 threadPos : SV_GroupThreadId, int2 pixelPos : 
         #endif
 
         // Sample weight
-        float3 samplePos = STL::Geometry::ReconstructViewPosition( uv, gFrustum, z, gOrthoMode );
-        float w = GetGeometryWeight( geometryWeightParams, Nv, samplePos );
+        float3 Xvs = STL::Geometry::ReconstructViewPosition( uv, gFrustum, z, gOrthoMode );
+        float NoX = dot( Nv, Xvs );
+
+        float w = ComputeWeight( NoX, geometryWeightParams.x, geometryWeightParams.y );
         w *= saturate( 1.0 - abs( centerSignNoL - signNoL ) );
         w *= IsInScreen( uv );
 
-        // Weight for outer shadow (to avoid blurring of ~umbra)
+        // Weight for outer shadow ( to avoid blurring of ~umbra )
         w *= lerp( 1.0, s.x, centerWeight );
 
         result += s * w;
@@ -208,9 +210,10 @@ NRD_EXPORT void NRD_CS_MAIN( int2 threadPos : SV_GroupThreadId, int2 pixelPos : 
     result *= invSum;
     hitDist *= invSum;
 
-    hitDist = max( hitDist * tileValue, SIGMA_MIN_DISTANCE );
+    hitDist *= tileValue;
+    hitDist *= centerSignNoL;
 
     // Output
     gOut_Shadow_Translucency[ pixelPos ] = PackShadow( result );
-    gOut_Hit_ViewZ[ pixelPos ] = float2( hitDist * centerSignNoL, viewZ * NRD_FP16_VIEWZ_SCALE );
+    gOut_Hit_ViewZ[ pixelPos ] = float2( hitDist, viewZ * NRD_FP16_VIEWZ_SCALE );
 }

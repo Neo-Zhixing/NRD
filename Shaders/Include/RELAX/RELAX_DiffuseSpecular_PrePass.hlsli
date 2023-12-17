@@ -129,7 +129,7 @@ NRD_EXPORT void NRD_CS_MAIN(int2 pixelPos : SV_DispatchThreadId, uint2 threadPos
 
         float weightSum = 1.0;
 
-        float diffMinHitDistanceWeight = 0.2;
+        float diffMinHitDistanceWeight = RELAX_HIT_DIST_MIN_WEIGHT;
 
         // Spatial blur
         [unroll]
@@ -164,12 +164,14 @@ NRD_EXPORT void NRD_CS_MAIN(int2 pixelPos : SV_DispatchThreadId, uint2 threadPos
                 gOrthoMode == 0 ? centerViewZ : 1.0,
                 sampleWorldPos,
                 gDepthThreshold);
-            sampleWeight *= GetNormalWeight(normalWeightParams, centerNormal, sampleNormal);
 
-            sampleWeight *= lerp(diffMinHitDistanceWeight, 1.0, GetHitDistanceWeight(hitDistanceWeightParams, sampleDiffuseIllumination.a));
+            float angle = STL::Math::AcosApprox(dot(centerNormal, sampleNormal));
+            sampleWeight *= ComputeWeight(angle, normalWeightParams, 0.0);
+
+            sampleWeight *= lerp(diffMinHitDistanceWeight, 1.0, ComputeExponentialWeight(sampleDiffuseIllumination.a, hitDistanceWeightParams.x, hitDistanceWeightParams.y));
 
             diffuseIllumination += (sampleWeight > 0) ? sampleDiffuseIllumination * sampleWeight : 0;
-            
+
             #ifdef RELAX_SH
                 float4 sampleDiffuseSH1 = gDiffuseSH1.SampleLevel(gNearestClamp, checkerboardUvScaled, 0);
                 diffuseSH1 += (sampleWeight > 0) ? sampleDiffuseSH1 * sampleWeight : 0;
@@ -254,12 +256,12 @@ NRD_EXPORT void NRD_CS_MAIN(int2 pixelPos : SV_DispatchThreadId, uint2 threadPos
         float2 hitDistanceWeightParams = GetHitDistanceWeightParams(specularIllumination.w, 1.0 / 9.0, centerRoughness);
         float2 roughnessWeightParams = GetRoughnessWeightParams(centerRoughness, gRoughnessFraction);
 
-        float specMinHitDistanceWeight = (specularIllumination.a == 0) ? 1.0 : 0.2;
+        float specMinHitDistanceWeight = (specularIllumination.a == 0) ? 1.0 : RELAX_HIT_DIST_MIN_WEIGHT;
         float specularHitT = (specularIllumination.a == 0) ? gDenoisingRange : specularIllumination.a;
 
         float NoV = abs(dot(centerNormal, viewVector));
 
-        float minHitT = specularHitT;
+        float minHitT = specularHitT == 0.0 ? NRD_INF : specularHitT;
         float weightSum = 1.0;
 
         // Spatial blur
@@ -290,10 +292,10 @@ NRD_EXPORT void NRD_CS_MAIN(int2 pixelPos : SV_DispatchThreadId, uint2 threadPos
             float sampleWeight = IsInScreen(uv);
             sampleWeight *= GetGaussianWeight(offset.z);
             sampleWeight *= CompareMaterials(centerMaterialID, sampleMaterialID, gSpecMaterialMask);
-            sampleWeight *= GetRoughnessWeight(roughnessWeightParams, sampleRoughness);
-            sampleWeight *= GetNormalWeight(normalWeightParams, centerNormal, sampleNormal);
+            sampleWeight *= ComputeWeight(sampleRoughness, roughnessWeightParams.x, roughnessWeightParams.y);
 
-            float hitDistanceWeight = GetHitDistanceWeight(hitDistanceWeightParams, sampleSpecularIllumination.a);
+            float angle = STL::Math::AcosApprox(dot(centerNormal, sampleNormal));
+            sampleWeight *= ComputeWeight(angle, normalWeightParams, 0.0);
 
             float3 sampleWorldPos = GetCurrentWorldPosFromClipSpaceXY(uv * 2.0 - 1.0, sampleViewZ);
             sampleWeight *= GetPlaneDistanceWeight(
@@ -303,10 +305,12 @@ NRD_EXPORT void NRD_CS_MAIN(int2 pixelPos : SV_DispatchThreadId, uint2 threadPos
                 sampleWorldPos,
                 gDepthThreshold);
 
+            sampleWeight *= lerp(specMinHitDistanceWeight, 1.0, ComputeExponentialWeight(sampleSpecularIllumination.a, hitDistanceWeightParams.x, hitDistanceWeightParams.y));
+
             // Decreasing weight for samples that most likely are very close to reflection contact
             // which should not be pre-blurred
             float d = length(sampleWorldPos - centerWorldPos);
-            float h = sampleSpecularIllumination.a; 
+            float h = sampleSpecularIllumination.a;
             float t = h / (specularIllumination.a + d);
             sampleWeight *= lerp(saturate(t), 1.0, STL::Math::LinearStep(0.5, 1.0, centerRoughness));
 
@@ -317,14 +321,12 @@ NRD_EXPORT void NRD_CS_MAIN(int2 pixelPos : SV_DispatchThreadId, uint2 threadPos
             #endif
             weightSum += sampleWeight;
 
-            if (sampleWeight > 0)
-            {
-                if ((sampleSpecularIllumination.a != 0) && (minHitT > sampleSpecularIllumination.a)) minHitT = sampleSpecularIllumination.a;
-            }
+            if (sampleWeight != 0.0)
+                minHitT = min(minHitT, sampleSpecularIllumination.a == 0.0 ? NRD_INF : sampleSpecularIllumination.a);
 
         }
         specularIllumination.rgb /= weightSum;
-        specularIllumination.a = minHitT;
+        specularIllumination.a = minHitT == NRD_INF ? 0.0 : minHitT;
         #ifdef RELAX_SH
             specularSH1 /= weightSum;
         #endif

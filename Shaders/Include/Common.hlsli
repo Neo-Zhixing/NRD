@@ -37,19 +37,34 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 // DEFAULT SETTINGS ( can be modified )
 //==================================================================================================================
 
-#define NRD_USE_QUADRATIC_DISTRIBUTION                          0 // bool
-#define NRD_USE_EXPONENTIAL_WEIGHTS                             0 // bool
+// Switches ( default 1 )
+#define NRD_USE_TILE_CHECK                                      1
+#define NRD_USE_HIGH_PARALLAX_CURVATURE                         1
+
+// Switches ( default 0 )
+#define NRD_USE_QUADRATIC_DISTRIBUTION                          0
+#define NRD_USE_EXPONENTIAL_WEIGHTS                             0
+#define NRD_USE_HIGH_PARALLAX_CURVATURE_SILHOUETTE_FIX          0 // it fixes silhouettes, but leads to less flattening on bumpy surfaces ( worse for bumpy surfaces ) and shorter arcs on smooth curved surfaces ( worse for low bit normals )
+
+// Settings
 #define NRD_BILATERAL_WEIGHT_CUTOFF                             0.03
 #define NRD_CATROM_SHARPNESS                                    0.5 // [ 0; 1 ], 0.5 matches Catmull-Rom
 #define NRD_RADIANCE_COMPRESSION_MODE                           3 // 0-4, specular color compression for spatial passes
 #define NRD_EXP_WEIGHT_DEFAULT_SCALE                            3.0
+#define NRD_ROUGHNESS_SENSITIVITY                               0.01 // smaller => more sensitive
+#define NRD_CURVATURE_Z_THRESHOLD                               0.1 // normalized %
 
+// IMPORTANT: if == 1, then for 0-roughness "GetEncodingAwareNormalWeight" can return values < 1 even for same normals due to data re-packing
+// IMPORTANT: suits for REBLUR and RELAX because both use RGBA8 normals internally
+#define NRD_NORMAL_ULP                                          ( 1.5 / 255.0 )
+
+// IMPORTANT: best fit is critical for non oct-packed variants!
 #if( NRD_NORMAL_ENCODING < NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
-    #define NRD_NORMAL_ENCODING_ERROR                           ( 1.0 / 255.0 )
+    #define NRD_NORMAL_ENCODING_ERROR                           ( 0.5 / 255.0 )
 #elif( NRD_NORMAL_ENCODING == NRD_NORMAL_ENCODING_R10G10B10A2_UNORM )
-    #define NRD_NORMAL_ENCODING_ERROR                           ( 1.0 / 1023.0 )
+    #define NRD_NORMAL_ENCODING_ERROR                           ( 0.5 / 1023.0 )
 #else
-    #define NRD_NORMAL_ENCODING_ERROR                           ( 1.0 / 65535.0 )
+    #define NRD_NORMAL_ENCODING_ERROR                           ( 0.5 / 65535.0 )
 #endif
 
 //==================================================================================================================
@@ -74,6 +89,7 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define BUFFER_Y                                                ( GROUP_Y + BORDER * 2 )
 
 #define PRELOAD_INTO_SMEM_WITH_TILE_CHECK \
+    isSky *= NRD_USE_TILE_CHECK; \
     if( isSky == 0.0 ) \
     { \
         int2 groupBase = pixelPos - threadPos - BORDER; \
@@ -164,9 +180,22 @@ float4 GetBlurKernelRotation( compiletime const uint mode, uint2 pixelPos, float
     return baseRotator;
 }
 
+// IMPORTANT: use "IsInScreen2x2" in critical places
 float IsInScreen( float2 uv )
 {
     return float( all( saturate( uv ) == uv ) );
+}
+
+// x y
+// z w
+float4 IsInScreen2x2( float2 footprintOrigin, float2 rectSize )
+{
+    float4 p = footprintOrigin.xyxy + float4( 0, 0, 1, 1 );
+
+    float4 r = float4( p >= 0.0 );
+    r *= float4( p < rectSize.xyxy );
+
+    return r.xzxz * r.yyww;
 }
 
 float2 ApplyCheckerboardShift( float2 uv, uint mode, uint counter, float2 screenSize, float2 invScreenSize, uint frameIndex )
@@ -187,14 +216,6 @@ float GetSpecMagicCurve( float roughness, float power = 0.25 )
     f *= STL::Math::Pow01( roughness, power );
 
     return f;
-}
-
-float GetSpecMagicCurve2( float roughness, float percentOfVolume = 0.987 )
-{
-    float angle = STL::ImportanceSampling::GetSpecularLobeHalfAngle( roughness, percentOfVolume );
-    float almostHalfPi = STL::ImportanceSampling::GetSpecularLobeHalfAngle( 1.0, percentOfVolume );
-
-    return saturate( angle / almostHalfPi );
 }
 
 /*
@@ -238,22 +259,10 @@ float GetColorCompressionExposureForSpatialPasses( float roughness )
 
 // Thin lens
 
-float EstimateCurvature( float3 Nplane, float3 n, float3 v, float3 N, float3 X )
-{
-    // https://computergraphics.stackexchange.com/questions/1718/what-is-the-simplest-way-to-compute-principal-curvature-for-a-mesh-triangle
-
-    float NoV = dot( Nplane, v );
-    float3 x = 0 + v * dot( X - 0, Nplane ) / NoV;
-    float3 edge = x - X;
-    float edgeLenSq = STL::Math::LengthSquared( edge );
-    float curvature = dot( n - N, edge ) * STL::Math::PositiveRcp( edgeLenSq );
-
-    return curvature;
-}
-
 float ApplyThinLensEquation( float NoV, float hitDist, float curvature )
 {
     /*
+    https://computergraphics.stackexchange.com/questions/1718/what-is-the-simplest-way-to-compute-principal-curvature-for-a-mesh-triangle
     https://www.geeksforgeeks.org/sign-convention-for-spherical-mirrors/
 
     Thin lens equation:
@@ -288,7 +297,7 @@ float ApplyThinLensEquation( float NoV, float hitDist, float curvature )
         https://www.desmos.com/calculator/dn9spdgwiz
     */
 
-    // TODO: dropping NoV improves behavior on curved surfaces in general ( see i76, i148, b7, b22, b26 ), but test i133
+    // TODO: dropping NoV improves behavior on curved surfaces in general ( see 76, 148, b7, b22, b26 ), but test 133
     // ( low curvature surface observed at grazing angle ) looks significantly worse, especially if motion is accelerated
     float hitDistFocused = hitDist / ( 2.0 * curvature * hitDist * NoV + 1.0 );
 
@@ -342,7 +351,7 @@ float2 GetHitDistanceWeightParams( float hitDist, float nonLinearAccumSpeed, flo
 {
     // IMPORTANT: since this weight is exponential, 3% can lead to leaks from bright objects in reflections.
     // Even 1% is not enough in some cases, but using a lower value makes things even more fragile
-    float smc = GetSpecMagicCurve2( roughness );
+    float smc = GetSpecMagicCurve( roughness );
     float norm = lerp( NRD_EPS, 1.0, min( nonLinearAccumSpeed, smc ) );
     float a = 1.0 / norm;
     float b = hitDist * a;
@@ -350,24 +359,23 @@ float2 GetHitDistanceWeightParams( float hitDist, float nonLinearAccumSpeed, flo
     return float2( a, -b );
 }
 
-// Weights params
-
-float2 GetRoughnessWeightParams( float roughness, float fraction )
+float2 GetRoughnessWeightParams( float roughness, float fraction, float sensitivity = NRD_ROUGHNESS_SENSITIVITY )
 {
-    float a = rcp( lerp( 0.01, 1.0, saturate( roughness * fraction ) ) );
+    float a = 1.0 / lerp( sensitivity, 1.0, saturate( roughness * fraction ) );
     float b = roughness * a;
 
     return float2( a, -b );
 }
 
-float2 GetRoughnessWeightParamsSq( float roughness, float fraction )
+float2 GetRelaxedRoughnessWeightParams( float m, float fraction = 1.0, float sensitivity = NRD_ROUGHNESS_SENSITIVITY )
 {
-    return GetRoughnessWeightParams( roughness * roughness, fraction );
-}
+    // "m" makes test less sensitive to small deltas
 
-float2 GetCoarseRoughnessWeightParams( float roughness )
-{
-    return float2( 1.0, -roughness );
+    // https://www.desmos.com/calculator/wkvacka5za
+    float a = 1.0 / lerp( lerp( m * m, m, fraction ), 1.0, sensitivity );
+    float b = m * a;
+
+    return float2( a, -b );
 }
 
 // Weights
@@ -381,56 +389,47 @@ float2 GetCoarseRoughnessWeightParams( float roughness )
 
 // Must be used for noisy data
 // https://www.desmos.com/calculator/9yoyc3is2g
-// scale = 3-5 is needed to match energy in "_ComputeNonExponentialWeight" ( especially when used in a recurrent loop )
-#define _ComputeExponentialWeight( x, px, py ) \
-    ExpApprox( -NRD_EXP_WEIGHT_DEFAULT_SCALE * abs( ( x ) * ( px ) + ( py ) ) )
+// scale = 3-5 is needed to match energy in "ComputeNonExponentialWeight" ( especially when used in a recurrent loop )
+#define ComputeExponentialWeight( x, px, py ) \
+    ExpApprox( -NRD_EXP_WEIGHT_DEFAULT_SCALE * abs( ( x ) * px + py ) )
 
 // A good choice for non noisy data
 // IMPORTANT: cutoffs are needed to minimize floating point precision drifting
-#define _ComputeNonExponentialWeight( x, px, py ) \
-    STL::Math::SmoothStep( 0.999, 0.001, abs( ( x ) * ( px ) + ( py ) ) )
+#define ComputeNonExponentialWeight( x, px, py ) \
+    STL::Math::SmoothStep( 0.999, 0.001, abs( ( x ) * px + py ) )
+
+#define ComputeNonExponentialWeightWithSigma( x, px, py, sigma ) \
+    STL::Math::SmoothStep( 0.999, 0.001, abs( ( x ) * px + py ) - sigma * px )
 
 #if( NRD_USE_EXPONENTIAL_WEIGHTS == 1 )
-    #define _ComputeWeight( x, px, py ) \
-        _ComputeExponentialWeight( x, px, py )
+    #define ComputeWeight( x, px, py )     ComputeExponentialWeight( x, px, py )
 #else
-    #define _ComputeWeight( x, px, py ) \
-        _ComputeNonExponentialWeight( x, px, py )
+    #define ComputeWeight( x, px, py )     ComputeNonExponentialWeight( x, px, py )
 #endif
-
-float GetRoughnessWeight( float2 params, float roughness )
-{
-    return _ComputeWeight( roughness, params.x, params.y );
-}
-
-float GetRoughnessWeightSq( float2 params, float roughness )
-{
-    return GetRoughnessWeight( params, roughness * roughness );
-}
-
-float GetHitDistanceWeight( float2 params, float hitDist )
-{
-    return _ComputeExponentialWeight( hitDist, params.x, params.y );
-}
-
-float GetGeometryWeight( float2 params, float3 n0, float3 p )
-{
-    float d = dot( n0, p );
-
-    return _ComputeWeight( d, params.x, params.y );
-}
-
-float GetNormalWeight( float param, float3 N, float3 n )
-{
-    float cosa = saturate( dot( N, n ) );
-    float angle = STL::Math::AcosApprox( cosa );
-
-    return _ComputeWeight( angle, param, 0.0 );
-}
 
 float GetGaussianWeight( float r )
 {
     return exp( -0.66 * r * r ); // assuming r is normalized to 1
+}
+
+// Encoding precision aware weight functions ( for reprojection )
+
+float GetEncodingAwareNormalWeight( float3 Ncurr, float3 Nprev, float maxAngle, float angleThreshold = 0.0 )
+{
+    // Anything below "angleThreshold" is ignored
+    angleThreshold += NRD_NORMAL_ULP;
+
+    float cosa = dot( Ncurr, Nprev );
+
+    float a = 1.0 / maxAngle;
+    float d = STL::Math::AcosApprox( cosa );
+
+    float w = STL::Math::SmoothStep01( 1.0 - ( d - angleThreshold ) * a );
+
+    // Needed to mitigate imprecision issues because prev normals are RGBA8 ( test 3, 43 if roughness is low )
+    w = STL::Math::SmoothStep( 0.05, 0.95, w );
+
+    return w;
 }
 
 // Only for checkerboard resolve and some "lazy" comparisons

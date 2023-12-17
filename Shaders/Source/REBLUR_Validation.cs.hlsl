@@ -58,7 +58,7 @@ NRD_EXPORT void NRD_CS_MAIN( uint2 pixelPos : SV_DispatchThreadId )
     data1.xz *= REBLUR_MAX_ACCUM_FRAME_NUM;
 
     uint bits;
-    float2 data2 = UnpackData2( gIn_Data2[ uint2( viewportUvScaled * gScreenSize ) ], abs( viewZ ), bits );
+    float2 data2 = UnpackData2( gIn_Data2[ uint2( viewportUvScaled * gScreenSize ) ], bits );
 
     float3 N = normalAndRoughness.xyz;
     float roughness = normalAndRoughness.w;
@@ -67,6 +67,7 @@ NRD_EXPORT void NRD_CS_MAIN( uint2 pixelPos : SV_DispatchThreadId )
     float3 X = STL::Geometry::RotateVector( gViewToWorld, Xv );
 
     bool isInf = abs( viewZ ) > gDenoisingRange;
+    bool checkerboard = STL::Sequence::CheckerBoard( pixelPos >> 2, 0 );
 
     uint4 textState = STL::Text::Init( pixelPos, viewportId * gScreenSize * VIEWPORT_SIZE + OFFSET, 1 );
 
@@ -213,9 +214,10 @@ NRD_EXPORT void NRD_CS_MAIN( uint2 pixelPos : SV_DispatchThreadId )
         STL::Text::Print_ch( 'E', textState );
         STL::Text::Print_ch( 'S', textState );
 
-        float diffFrameNum = 1.0 - saturate( data1.x / max( gMaxAccumulatedFrameNum, 1.0 ) ); // map history reset to red
+        float f = 1.0 - saturate( data1.x / max( gMaxAccumulatedFrameNum, 1.0 ) );
+        f = checkerboard && data1.x < 1.0 ? 0.75 : f;
 
-        result.xyz = STL::Color::ColorizeZucconi( viewportUv.y > 0.95 ? 1.0 - viewportUv.x : diffFrameNum * float( !isInf ) );
+        result.xyz = STL::Color::ColorizeZucconi( viewportUv.y > 0.95 ? 1.0 - viewportUv.x : f * float( !isInf ) );
         result.w = 1.0;
     }
     // Specular frames
@@ -233,9 +235,10 @@ NRD_EXPORT void NRD_CS_MAIN( uint2 pixelPos : SV_DispatchThreadId )
         STL::Text::Print_ch( 'E', textState );
         STL::Text::Print_ch( 'S', textState );
 
-        float specFrameNum = 1.0 - saturate( data1.z / max( gMaxAccumulatedFrameNum, 1.0 ) ); // map history reset to red
+        float f = 1.0 - saturate( data1.z / max( gMaxAccumulatedFrameNum, 1.0 ) );
+        f = checkerboard && data1.z < 1.0 ? 0.75 : f;
 
-        result.xyz = STL::Color::ColorizeZucconi( viewportUv.y > 0.95 ? 1.0 - viewportUv.x : specFrameNum * float( !isInf ) );
+        result.xyz = STL::Color::ColorizeZucconi( viewportUv.y > 0.95 ? 1.0 - viewportUv.x : f * float( !isInf ) );
         result.w = 1.0;
     }
     // Diff hitT
